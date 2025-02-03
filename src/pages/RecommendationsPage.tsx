@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
+import { useLoadScript, GoogleMap } from '@react-google-maps/api';
 import { PlaceCard } from '../components/PlaceCard';
-import { Search, SlidersHorizontal } from 'lucide-react';
+import { Search, MapPin } from 'lucide-react';
 
 interface Place {
   id: string;
@@ -11,9 +12,14 @@ interface Place {
   address: string;
   types: string[];
   userRatingsTotal: number;
+  location: {
+    lat: number;
+    lng: number;
+  };
 }
 
 const CURRENCIES = [
+  { code: 'INR', symbol: '₹' },
   { code: 'USD', symbol: '$' },
   { code: 'EUR', symbol: '€' },
   { code: 'GBP', symbol: '£' },
@@ -22,10 +28,18 @@ const CURRENCIES = [
   { code: 'CAD', symbol: 'C$' },
 ];
 
+const libraries: ("places" | "drawing" | "geometry" | "localContext" | "visualization")[] = ["places"];
+
 export function RecommendationsPage() {
+  const { isLoaded, loadError } = useLoadScript({
+    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
+    libraries,
+  });
+
   const [places, setPlaces] = useState<Place[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mapCenter, setMapCenter] = useState({ lat: 48.8566, lng: 2.3522 }); // Paris by default
   
   const [filters, setFilters] = useState({
     type: 'restaurant',
@@ -33,7 +47,7 @@ export function RecommendationsPage() {
     rating: 0,
     maxBudget: {
       amount: 0,
-      currency: 'USD'
+      currency: 'INR'
     },
     cuisine: '',
     preferences: [] as string[]
@@ -42,8 +56,8 @@ export function RecommendationsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [location, setLocation] = useState('');
 
-  const searchPlaces = async () => {
-    if (!location) {
+  const searchPlaces = useCallback(async () => {
+    if (!isLoaded || !location) {
       setError('Please enter a location to search');
       return;
     }
@@ -52,44 +66,78 @@ export function RecommendationsPage() {
     setError(null);
 
     try {
-      // For demo purposes, we'll use some sample data
-      // In a real application, you would make API calls to a backend service
-      // that would handle the Google Places API requests
-      const samplePlaces: Place[] = [
-        {
-          id: '1',
-          name: 'Le Petit Bistro',
-          image: 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=800',
-          rating: 4.5,
-          priceLevel: 3,
-          address: '123 Sample Street, Paris',
-          types: ['restaurant', 'food'],
-          userRatingsTotal: 856
-        },
-        {
-          id: '2',
-          name: 'Café de Paris',
-          image: 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=800',
-          rating: 4.2,
-          priceLevel: 2,
-          address: '456 Example Avenue, Paris',
-          types: ['cafe', 'restaurant'],
-          userRatingsTotal: 1243
-        },
-        {
-          id: '3',
-          name: 'The Grand Hotel',
-          image: 'https://images.unsplash.com/photo-1566073771259-6a8506099945?w=800',
-          rating: 4.8,
-          priceLevel: 4,
-          address: '789 Test Boulevard, Paris',
-          types: ['lodging', 'hotel'],
-          userRatingsTotal: 2156
-        }
-      ];
+      // First, geocode the location
+      const geocoder = new google.maps.Geocoder();
+      const geocodeResult = await geocoder.geocode({ address: location });
+      
+      if (!geocodeResult.results.length) {
+        throw new Error('Location not found');
+      }
+
+      const locationLatLng = geocodeResult.results[0].geometry.location;
+      setMapCenter({ lat: locationLatLng.lat(), lng: locationLatLng.lng() });
+
+      // Create Places Service
+      const map = new google.maps.Map(document.createElement('div'));
+      const service = new google.maps.places.PlacesService(map);
+
+      // Search for places
+      const searchRequest = {
+        location: locationLatLng,
+        radius: 5000,
+        type: filters.type as google.maps.places.PlaceType,
+        keyword: filters.cuisine || searchQuery
+      };
+
+      const placesResult = await new Promise<google.maps.places.PlaceResult[]>((resolve, reject) => {
+        service.nearbySearch(searchRequest, (results, status) => {
+          if (status === google.maps.places.PlacesServiceStatus.OK && results) {
+            resolve(results);
+          } else {
+            reject(new Error('Failed to find places'));
+          }
+        });
+      });
+
+      // Get details for each place
+      const detailedPlaces = await Promise.all(
+        placesResult.slice(0, 10).map(async place => {
+          const details = await new Promise<google.maps.places.PlaceResult>((resolve, reject) => {
+            service.getDetails(
+              {
+                placeId: place.place_id!,
+                fields: ['photos', 'price_level', 'rating', 'user_ratings_total', 'formatted_address', 'types', 'geometry']
+              },
+              (result, status) => {
+                if (status === google.maps.places.PlacesServiceStatus.OK && result) {
+                  resolve(result);
+                } else {
+                  reject(new Error('Failed to get place details'));
+                }
+              }
+            );
+          });
+
+          return {
+            id: place.place_id!,
+            name: place.name!,
+            image: place.photos?.[0].getUrl({ maxWidth: 800, maxHeight: 600 }) || 
+                  'https://images.unsplash.com/photo-1515003197210-e0cd71810b5f?w=800',
+            rating: details.rating || 0,
+            priceLevel: details.price_level || 0,
+            address: details.formatted_address!,
+            types: details.types || [],
+            userRatingsTotal: details.user_ratings_total || 0,
+            location: {
+              lat: details.geometry?.location?.lat() || 0,
+              lng: details.geometry?.location?.lng() || 0
+            }
+          };
+        })
+      );
 
       // Apply recommendation algorithm
-      const recommendedPlaces = samplePlaces
+      const recommendedPlaces = detailedPlaces
         .map(place => ({
           ...place,
           score: calculateRecommendationScore(place, filters)
@@ -106,9 +154,9 @@ export function RecommendationsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [isLoaded, location, filters, searchQuery]);
 
-  const calculateRecommendationScore = (place: Place, filters: typeof filters) => {
+  const calculateRecommendationScore = (place: Place, filters: typeof filters) =>{
     let score = 0;
 
     // Rating score (0-5 points)
@@ -144,13 +192,32 @@ export function RecommendationsPage() {
       return false;
     }
     if (filters.maxBudget.amount > 0) {
-      const estimatedBudget = place.priceLevel * 25; // Rough estimation
+      const estimatedBudget = place.priceLevel * 25;
       if (estimatedBudget > filters.maxBudget.amount) {
         return false;
       }
     }
     return true;
   });
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-red-600 mb-4">Error loading Google Maps</p>
+          <p className="text-gray-600">Please check your API key and try again</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
@@ -167,20 +234,33 @@ export function RecommendationsPage() {
         <div className="mb-8 space-y-4">
           <div className="flex gap-4">
             <div className="flex-1">
-              <input
-                type="text"
-                placeholder="Enter location (e.g., Paris, France)"
-                value={location}
-                onChange={(e) => setLocation(e.target.value)}
-                className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
+              <div className="relative">
+                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Enter location (e.g., Paris, France)"
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
             </div>
             <button
               onClick={searchPlaces}
-              disabled={loading}
-              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={loading || !location}
+              className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
-              {loading ? 'Searching...' : 'Search'}
+              {loading ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                  Searching...
+                </>
+              ) : (
+                <>
+                  <Search className="w-4 h-4" />
+                  Search
+                </>
+              )}
             </button>
           </div>
 
@@ -211,10 +291,10 @@ export function RecommendationsPage() {
               className="px-4 py-2 rounded-lg border border-gray-300 bg-white"
             >
               <option value="0">Any Price</option>
-              <option value="1">$</option>
-              <option value="2">$$</option>
-              <option value="3">$$$</option>
-              <option value="4">$$$$</option>
+              <option value="1">₹</option>
+              <option value="2">$</option>
+              <option value="3">₹</option>
+              <option value="4">$</option>
             </select>
 
             <select
@@ -297,7 +377,7 @@ export function RecommendationsPage() {
                     }))}
                     className="hover:text-blue-600"
                   >
-                    ×
+                    
                   </button>
                 </span>
               ))}
@@ -305,22 +385,45 @@ export function RecommendationsPage() {
           )}
         </div>
 
-        {loading && (
-          <div className="text-center py-12">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-            <p className="mt-4 text-gray-600">Loading recommendations...</p>
-          </div>
-        )}
-
         {error && (
           <div className="text-center py-12">
             <p className="text-red-600 whitespace-pre-line">{error}</p>
           </div>
         )}
 
-        {!loading && !error && filteredPlaces.length === 0 && (
+        {!loading && !error && filteredPlaces.length === 0 && places.length > 0 && (
           <div className="text-center py-12">
             <p className="text-gray-600">No places found matching your criteria.</p>
+          </div>
+        )}
+
+        {places.length > 0 && (
+          <div className="mb-8">
+            <div className="h-[300px] rounded-lg overflow-hidden">
+              <GoogleMap
+                mapContainerStyle={{ width: '100%', height: '100%' }}
+                center={mapCenter}
+                zoom={13}
+                options={{
+                  disableDefaultUI: true,
+                  zoomControl: true,
+                  streetViewControl: true,
+                  mapTypeControl: true,
+                }}
+              >
+                {filteredPlaces.map((place) => (
+                  <div
+                    key={place.id}
+                    className="absolute"
+                    style={{
+                      left: '50%',
+                      top: '50%',
+                      transform: 'translate(-50%, -50%)',
+                    }}
+                  />
+                ))}
+              </GoogleMap>
+            </div>
           </div>
         )}
 
