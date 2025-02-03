@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { PollCard } from '../components/PollCard';
-import { Plus, X, Image, Video, Trash2, DollarSign } from 'lucide-react';
+import { Plus, X, Image, Video, Trash2} from 'lucide-react';
 
 interface Media {
   type: 'image' | 'video';
@@ -24,6 +24,7 @@ interface Poll {
 }
 
 const CURRENCIES = [
+  { code: 'INR', symbol: '₹' },
   { code: 'USD', symbol: '$' },
   { code: 'EUR', symbol: '€' },
   { code: 'GBP', symbol: '£' },
@@ -38,8 +39,8 @@ const INITIAL_POLLS: Poll[] = [
     title: 'Visit Eiffel Tower',
     description: 'Should we include the iconic Eiffel Tower in our Paris itinerary?',
     budget: {
-      amount: 25,
-      currency: 'EUR'
+      amount: 2500,
+      currency: 'INR'
     },
     media: [{
       type: 'image',
@@ -67,7 +68,7 @@ const INITIAL_POLLS: Poll[] = [
     description: 'Experience the famous wine region with a guided tour?',
     budget: {
       amount: 120,
-      currency: 'EUR'
+      currency: 'INR'
     },
     media: [{
       type: 'image',
@@ -86,7 +87,7 @@ export function PollsPage() {
     description: '',
     budget: {
       amount: 0,
-      currency: 'USD'
+      currency: 'INR'
     },
     media: [] as Media[]
   });
@@ -134,14 +135,14 @@ export function PollsPage() {
     setNewPoll({
       title: '',
       description: '',
-      budget: { amount: 0, currency: 'USD' },
+      budget: { amount: 0, currency: 'INR' },
       media: []
     });
     setShowCreateModal(false);
   };
 
   const handleAddMedia = (type: 'image' | 'video') => {
-    const url = prompt(`Enter ${type} URL:`);
+    const url = prompt(`Enter ₹{type} URL:`);
     if (url) {
       setNewPoll(current => ({
         ...current,
